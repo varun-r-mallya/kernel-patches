@@ -1,0 +1,58 @@
+From 710e46344f1bc0469b482afb3a2431fb9714cc5b Mon Sep 17 00:00:00 2001
+From: Varun R Mallya <varunrmallya@gmail.com>
+Date: Mon, 9 Feb 2026 23:01:28 +0530
+Subject: [RFC PATCH bpf-next 0/1] Upgrading uprobe and kprobe to their `multi` counterparts.
+
+This RFC patch explores auto-upgrading standard uprobes to use the 
+multi-uprobe infrastructure when supported by the underlying kernel.
+
+Background:
+The BPF token concept allows privileged operations inside non-privileged 
+user namespaces. However, attaching standard uprobes and kprobes 
+currently relies on the perf_event_open() syscall, which is not BPF 
+token-aware. Multi-uprobes and multi-kprobes bypass 
+perf_event_open() entirely, attaching via the bpf() syscall instead, 
+making them compatible with BPF tokens. 
+
+To bridge this gap, the goal is to switch SEC("uprobe") and 
+SEC("kprobe") to use multi-uprobe/kprobe under the hood. To maintain 
+backward compatibility for cases where singular uprobes are explicitly 
+desired, this patch also introduces SEC("uprobe.single") and 
+SEC("kprobe.single").
+
+Current Implementation:
+The decision to upgrade is made at BPF program load time in 
+`bpf_object_init_progs()`. If the kernel supports FEAT_UPROBE_MULTI_LINK,
+we intercept programs with section names matching "u[ret]probe" and change 
+their `expected_attach_type` to BPF_TRACE_UPROBE_MULTI.
+
+During attachment, `attach_uprobe` checks this expected type and 
+routes the attachment to `bpf_program__attach_uprobe_multi` accordingly.
+
+I am currently hitting an issue with selftests, and I would appreciate 
+some guidance before proceeding to implement this for kprobes and fix it
+for uprobes.
+
+Selftests that rely on auto-attachment pass. However, tests that bypass 
+auto-attach and manually call `bpf_program__attach_uprobe_opts()` are 
+failing. Because the program's `expected_attach_type` is modified to 
+multi-uprobe at load time inside `bpf_object_init_progs()`, directly 
+calling the legacy attach options subsequently dies due to the type 
+mismatch. 
+
+How should we handle legacy manual attachments for auto-upgraded programs? 
+Should `bpf_program__attach_uprobe_opts()` be taught to internally 
+redirect to the multi-uprobe path if the expected type was upgraded?
+
+Thanks,
+Varun
+
+Varun R Mallya (1):
+  libbpf: Auto-upgrade uprobes to multi-uprobes when supported
+
+ tools/lib/bpf/libbpf.c | 42 ++++++++++++++++++++++++++++++++++++------
+ 1 file changed, 36 insertions(+), 6 deletions(-)
+
+-- 
+2.52.0
+
