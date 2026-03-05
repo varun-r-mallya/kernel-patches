@@ -1,0 +1,43 @@
+From 500f75d7ecf42d231936fd2e1767c23815d80e04 Mon Sep 17 00:00:00 2001
+From: Varun R Mallya <varunrmallya@gmail.com>
+Date: Fri, 6 Mar 2026 00:36:44 +0530
+Subject: [PATCH bpf-next] selftests/bpf: Fix const qualifier warning in
+ fexit_bpf2bpf.c
+
+Building selftests with
+clang 23.0.0 (6fae863eba8a72cdd82f37e7111a46a70be525e0) triggers
+the following error:
+
+  tools/testing/selftests/bpf/prog_tests/fexit_bpf2bpf.c:117:12:
+  error: assigning to 'char *' from 'const char *' discards qualifiers
+  [-Werror,-Wincompatible-pointer-types-discards-qualifiers]
+
+The variable `tgt_name` is declared as `char *`, but it stores the
+result of strstr(prog_name[i], "/"). Since `prog_name[i]` is a
+`const char *`, the returned pointer should also be treated as
+const-qualified.
+
+Update `tgt_name` to `const char *` to match the type of the underlying
+string and silence the compiler warning.
+
+Signed-off-by: Varun R Mallya <varunrmallya@gmail.com>
+---
+ tools/testing/selftests/bpf/prog_tests/fexit_bpf2bpf.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/tools/testing/selftests/bpf/prog_tests/fexit_bpf2bpf.c b/tools/testing/selftests/bpf/prog_tests/fexit_bpf2bpf.c
+index 23d933f1aec6..92c20803ea76 100644
+--- a/tools/testing/selftests/bpf/prog_tests/fexit_bpf2bpf.c
++++ b/tools/testing/selftests/bpf/prog_tests/fexit_bpf2bpf.c
+@@ -111,7 +111,7 @@ static void test_fexit_bpf2bpf_common(const char *obj_file,
+ 		struct bpf_link_info link_info;
+ 		struct bpf_program *pos;
+ 		const char *pos_sec_name;
+-		char *tgt_name;
++		const char *tgt_name;
+ 		__s32 btf_id;
+ 
+ 		tgt_name = strstr(prog_name[i], "/");
+-- 
+2.53.0
+
