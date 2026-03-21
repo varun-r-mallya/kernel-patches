@@ -1,0 +1,132 @@
+From 98ca0430dc36e953ac895d444b47040fa62095f2 Mon Sep 17 00:00:00 2001
+From: Varun R Mallya <varunrmallya@gmail.com>
+Date: Sun, 22 Mar 2026 02:33:51 +0530
+Subject: [PATCH bpf-next] selftests/bpf: Add test for struct_ops __ref
+ argument in any position
+
+Add a selftest to verify that the verifier correctly identifies refcounted
+arguments in struct_ops programs, even when they are not the first
+argument. This ensures that the restriction on tail calls for programs
+with __ref arguments is properly enforced regardless of which argument
+they appear in.
+
+This test verifies the fix for check_struct_ops_btf_id() proposed by
+Keisuke Nishimura [0], which corrected a bug where only the first
+argument was checked for the refcounted flag.
+The test includes:
+- An update to bpf_testmod to add 'test_refcounted_multi', an operator with
+  three arguments where the third is tagged with "__ref".
+- A BPF program 'test_refcounted_multi' that attempts a tail call.
+- A test runner that asserts the verifier rejects the program with
+  "program with __ref argument cannot tail call".
+
+[0]: https://lore.kernel.org/bpf/20260320130219.63711-1-keisuke.nishimura@inria.fr/
+
+Signed-off-by: Varun R Mallya <varunrmallya@gmail.com>
+---
+ .../prog_tests/test_struct_ops_multi_args.c   |  9 +++++
+ .../bpf/progs/struct_ops_multi_args.c         | 35 +++++++++++++++++++
+ .../selftests/bpf/test_kmods/bpf_testmod.c    |  7 ++++
+ .../selftests/bpf/test_kmods/bpf_testmod.h    |  3 ++
+ 4 files changed, 54 insertions(+)
+ create mode 100644 tools/testing/selftests/bpf/prog_tests/test_struct_ops_multi_args.c
+ create mode 100644 tools/testing/selftests/bpf/progs/struct_ops_multi_args.c
+
+diff --git a/tools/testing/selftests/bpf/prog_tests/test_struct_ops_multi_args.c b/tools/testing/selftests/bpf/prog_tests/test_struct_ops_multi_args.c
+new file mode 100644
+index 000000000000..0f321e889862
+--- /dev/null
++++ b/tools/testing/selftests/bpf/prog_tests/test_struct_ops_multi_args.c
+@@ -0,0 +1,9 @@
++// SPDX-License-Identifier: GPL-2.0
++
++#include <test_progs.h>
++#include "struct_ops_multi_args.skel.h"
++
++void test_struct_ops_multi_args(void)
++{
++	RUN_TESTS(struct_ops_multi_args);
++}
+diff --git a/tools/testing/selftests/bpf/progs/struct_ops_multi_args.c b/tools/testing/selftests/bpf/progs/struct_ops_multi_args.c
+new file mode 100644
+index 000000000000..c62be15757f0
+--- /dev/null
++++ b/tools/testing/selftests/bpf/progs/struct_ops_multi_args.c
+@@ -0,0 +1,35 @@
++// SPDX-License-Identifier: GPL-2.0
++/* Copyright (c) 2026 Varun R Mallya */
++
++#include <vmlinux.h>
++#include <bpf/bpf_helpers.h>
++#include <bpf/bpf_tracing.h>
++#include "../test_kmods/bpf_testmod.h"
++#include "bpf_misc.h"
++
++char _license[] SEC("license") = "GPL";
++
++struct {
++	__uint(type, BPF_MAP_TYPE_PROG_ARRAY);
++	__uint(max_entries, 1);
++	__uint(key_size, sizeof(__u32));
++	__uint(value_size, sizeof(__u32));
++} prog_array SEC(".maps");
++
++SEC("struct_ops/test_refcounted_multi")
++__failure __msg("program with __ref argument cannot tail call")
++int test_refcounted_multi(unsigned long long *ctx)
++{
++	/* ctx[2] is used because the refcounted variable is the third argument */
++	struct task_struct *refcounted_task = (struct task_struct *)ctx[2];
++
++	bpf_task_release(refcounted_task);
++	bpf_tail_call(ctx, &prog_array, 0);
++
++	return 0;
++}
++
++SEC(".struct_ops.link")
++struct bpf_testmod_ops testmod_ref_acquire = {
++	.test_refcounted_multi = (void *)test_refcounted_multi,
++};
+diff --git a/tools/testing/selftests/bpf/test_kmods/bpf_testmod.c b/tools/testing/selftests/bpf/test_kmods/bpf_testmod.c
+index 94edbd2afa67..297b02372fa6 100644
+--- a/tools/testing/selftests/bpf/test_kmods/bpf_testmod.c
++++ b/tools/testing/selftests/bpf/test_kmods/bpf_testmod.c
+@@ -1411,6 +1411,12 @@ static int bpf_testmod_ops__test_refcounted(int dummy,
+ 	return 0;
+ }
+ 
++static int bpf_testmod_ops__test_refcounted_multi(int dummy, struct task_struct *task__nullable,
++						  struct task_struct *task__ref)
++{
++	return 0;
++}
++
+ static struct task_struct *
+ bpf_testmod_ops__test_return_ref_kptr(int dummy, struct task_struct *task__ref,
+ 				      struct cgroup *cgrp)
+@@ -1423,6 +1429,7 @@ static struct bpf_testmod_ops __bpf_testmod_ops = {
+ 	.test_2 = bpf_testmod_test_2,
+ 	.test_maybe_null = bpf_testmod_ops__test_maybe_null,
+ 	.test_refcounted = bpf_testmod_ops__test_refcounted,
++	.test_refcounted_multi = bpf_testmod_ops__test_refcounted_multi,
+ 	.test_return_ref_kptr = bpf_testmod_ops__test_return_ref_kptr,
+ };
+ 
+diff --git a/tools/testing/selftests/bpf/test_kmods/bpf_testmod.h b/tools/testing/selftests/bpf/test_kmods/bpf_testmod.h
+index f6e492f9d042..863fd10f1619 100644
+--- a/tools/testing/selftests/bpf/test_kmods/bpf_testmod.h
++++ b/tools/testing/selftests/bpf/test_kmods/bpf_testmod.h
+@@ -39,6 +39,9 @@ struct bpf_testmod_ops {
+ 	int (*unsupported_ops)(void);
+ 	/* Used to test ref_acquired arguments. */
+ 	int (*test_refcounted)(int dummy, struct task_struct *task);
++	/* Used to test checking of __ref arguments when it not the first argument. */
++	int (*test_refcounted_multi)(int dummy, struct task_struct *task,
++				     struct task_struct *task2);
+ 	/* Used to test returning referenced kptr. */
+ 	struct task_struct *(*test_return_ref_kptr)(int dummy, struct task_struct *task,
+ 						    struct cgroup *cgrp);
+-- 
+2.53.0
+
