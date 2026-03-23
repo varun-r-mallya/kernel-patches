@@ -1,0 +1,204 @@
+From 42db131bf4a5642f39cd2a1244c7b9262a0b7f3b Mon Sep 17 00:00:00 2001
+From: Varun R Mallya <varunrmallya@gmail.com>
+Date: Mon, 23 Mar 2026 01:47:06 +0530
+Subject: [PATCH bpf-next v3] selftests/bpf: Improve connect_force_port test
+ reliability
+
+The connect_force_port test fails intermittently in CI because the
+hardcoded server ports (60123/60124) may already be in use by other
+tests or processes [1].
+
+Fix this by passing port 0 to start_server(), letting the kernel assign
+a free port dynamically. The actual assigned port is then propagated to
+the BPF programs by writing it into the .bss map's initial value (via
+bpf_map__initial_value()) before loading, so the BPF programs use the
+correct backend port at runtime.
+
+[1] https://github.com/kernel-patches/bpf/actions/runs/22697676317/job/65808536038
+
+Suggested-by: Jiayuan Chen <jiayuan.chen@linux.dev>
+Signed-off-by: Varun R Mallya <varunrmallya@gmail.com>
+Reviewed-by: Sun Jian <sun.jian.kdev@gmail.com>
+---
+This patch implements the approach suggested by Yonghong Song in his
+review of Jiayuan's v1 patch [2]: fix only the hardcoded port issue
+while keeping the existing bpf_object__*() loading model, skipping
+the optional skeleton refactor.
+
+[2] https://lore.kernel.org/bpf/6555dc32-b651-4c45-adaf-e3aecb013904@linux.dev/
+
+Changes v2->v3: Changed port type from unsigned short to __u16 and
+ASSERT_OK_PTR failures now directly jump to close_bpf_object
+
+ .../bpf/prog_tests/connect_force_port.c       | 26 ++++++++++++++++---
+ .../selftests/bpf/progs/connect_force_port4.c | 10 ++++---
+ .../selftests/bpf/progs/connect_force_port6.c | 10 ++++---
+ 3 files changed, 34 insertions(+), 12 deletions(-)
+
+diff --git a/tools/testing/selftests/bpf/prog_tests/connect_force_port.c b/tools/testing/selftests/bpf/prog_tests/connect_force_port.c
+index 24d553109f8d..dfb7f6cf3ee1 100644
+--- a/tools/testing/selftests/bpf/prog_tests/connect_force_port.c
++++ b/tools/testing/selftests/bpf/prog_tests/connect_force_port.c
+@@ -53,6 +53,9 @@ static int run_test(int cgroup_fd, int server_fd, int family, int type)
+ 	__u16 expected_peer_port = 60000;
+ 	struct bpf_program *prog;
+ 	struct bpf_object *obj;
++	struct bpf_map *map;
++	__u16 *port_ptr;
++	size_t port_size;
+ 	const char *obj_file = v4 ? "connect_force_port4.bpf.o" : "connect_force_port6.bpf.o";
+ 	int fd, err;
+ 	__u32 duration = 0;
+@@ -61,6 +64,21 @@ static int run_test(int cgroup_fd, int server_fd, int family, int type)
+ 	if (!ASSERT_OK_PTR(obj, "bpf_obj_open"))
+ 		return -1;
+ 
++	map = bpf_object__find_map_by_name(obj, ".bss");
++	if (!ASSERT_OK_PTR(map, "find bss map")) {
++		err = -EIO;
++		goto close_bpf_object;
++	}
++
++	port_ptr = bpf_map__initial_value(map, &port_size);
++	if (!ASSERT_OK_PTR(port_ptr, "get bss initial value")) {
++		err = -EIO;
++		goto close_bpf_object;
++	}
++
++	/* Auto assigns the port according to availability */
++	*port_ptr = ntohs(get_socket_local_port(server_fd));
++
+ 	err = bpf_object__load(obj);
+ 	if (!ASSERT_OK(err, "bpf_obj_load")) {
+ 		err = -EIO;
+@@ -138,25 +156,25 @@ void test_connect_force_port(void)
+ 	if (CHECK_FAIL(cgroup_fd < 0))
+ 		return;
+ 
+-	server_fd = start_server(AF_INET, SOCK_STREAM, NULL, 60123, 0);
++	server_fd = start_server(AF_INET, SOCK_STREAM, NULL, 0, 0);
+ 	if (CHECK_FAIL(server_fd < 0))
+ 		goto close_cgroup_fd;
+ 	CHECK_FAIL(run_test(cgroup_fd, server_fd, AF_INET, SOCK_STREAM));
+ 	close(server_fd);
+ 
+-	server_fd = start_server(AF_INET6, SOCK_STREAM, NULL, 60124, 0);
++	server_fd = start_server(AF_INET6, SOCK_STREAM, NULL, 0, 0);
+ 	if (CHECK_FAIL(server_fd < 0))
+ 		goto close_cgroup_fd;
+ 	CHECK_FAIL(run_test(cgroup_fd, server_fd, AF_INET6, SOCK_STREAM));
+ 	close(server_fd);
+ 
+-	server_fd = start_server(AF_INET, SOCK_DGRAM, NULL, 60123, 0);
++	server_fd = start_server(AF_INET, SOCK_DGRAM, NULL, 0, 0);
+ 	if (CHECK_FAIL(server_fd < 0))
+ 		goto close_cgroup_fd;
+ 	CHECK_FAIL(run_test(cgroup_fd, server_fd, AF_INET, SOCK_DGRAM));
+ 	close(server_fd);
+ 
+-	server_fd = start_server(AF_INET6, SOCK_DGRAM, NULL, 60124, 0);
++	server_fd = start_server(AF_INET6, SOCK_DGRAM, NULL, 0, 0);
+ 	if (CHECK_FAIL(server_fd < 0))
+ 		goto close_cgroup_fd;
+ 	CHECK_FAIL(run_test(cgroup_fd, server_fd, AF_INET6, SOCK_DGRAM));
+diff --git a/tools/testing/selftests/bpf/progs/connect_force_port4.c b/tools/testing/selftests/bpf/progs/connect_force_port4.c
+index 27a632dd382e..d5be6a559d6a 100644
+--- a/tools/testing/selftests/bpf/progs/connect_force_port4.c
++++ b/tools/testing/selftests/bpf/progs/connect_force_port4.c
+@@ -14,6 +14,8 @@
+ 
+ char _license[] SEC("license") = "GPL";
+ 
++__u16 port = 0;
++
+ struct svc_addr {
+ 	__be32 addr;
+ 	__be16 port;
+@@ -40,7 +42,7 @@ int connect4(struct bpf_sock_addr *ctx)
+ 	if (bpf_bind(ctx, (struct sockaddr *)&sa, sizeof(sa)) != 0)
+ 		return 0;
+ 
+-	/* Rewire service 1.2.3.4:60000 to backend 127.0.0.1:60123. */
++	/* Rewire service 1.2.3.4:60000 to backend 127.0.0.1:port. */
+ 	if (ctx->user_port == bpf_htons(60000)) {
+ 		orig = bpf_sk_storage_get(&service_mapping, ctx->sk, 0,
+ 					  BPF_SK_STORAGE_GET_F_CREATE);
+@@ -51,7 +53,7 @@ int connect4(struct bpf_sock_addr *ctx)
+ 		orig->port = ctx->user_port;
+ 
+ 		ctx->user_ip4 = bpf_htonl(0x7f000001);
+-		ctx->user_port = bpf_htons(60123);
++		ctx->user_port = bpf_htons(port);
+ 	}
+ 	return 1;
+ }
+@@ -63,7 +65,7 @@ int getsockname4(struct bpf_sock_addr *ctx)
+ 		return 1;
+ 
+ 	/* Expose local server as 1.2.3.4:60000 to client. */
+-	if (ctx->user_port == bpf_htons(60123)) {
++	if (ctx->user_port == bpf_htons(port)) {
+ 		ctx->user_ip4 = bpf_htonl(0x01020304);
+ 		ctx->user_port = bpf_htons(60000);
+ 	}
+@@ -79,7 +81,7 @@ int getpeername4(struct bpf_sock_addr *ctx)
+ 		return 1;
+ 
+ 	/* Expose service 1.2.3.4:60000 as peer instead of backend. */
+-	if (ctx->user_port == bpf_htons(60123)) {
++	if (ctx->user_port == bpf_htons(port)) {
+ 		orig = bpf_sk_storage_get(&service_mapping, ctx->sk, 0, 0);
+ 		if (orig) {
+ 			ctx->user_ip4 = orig->addr;
+diff --git a/tools/testing/selftests/bpf/progs/connect_force_port6.c b/tools/testing/selftests/bpf/progs/connect_force_port6.c
+index 19cad93e612f..a1a671b39083 100644
+--- a/tools/testing/selftests/bpf/progs/connect_force_port6.c
++++ b/tools/testing/selftests/bpf/progs/connect_force_port6.c
+@@ -13,6 +13,8 @@
+ 
+ char _license[] SEC("license") = "GPL";
+ 
++__u16 port = 0;
++
+ struct svc_addr {
+ 	__be32 addr[4];
+ 	__be16 port;
+@@ -39,7 +41,7 @@ int connect6(struct bpf_sock_addr *ctx)
+ 	if (bpf_bind(ctx, (struct sockaddr *)&sa, sizeof(sa)) != 0)
+ 		return 0;
+ 
+-	/* Rewire service [fc00::1]:60000 to backend [::1]:60124. */
++	/* Rewire service [fc00::1]:60000 to backend [::1]:port. */
+ 	if (ctx->user_port == bpf_htons(60000)) {
+ 		orig = bpf_sk_storage_get(&service_mapping, ctx->sk, 0,
+ 					  BPF_SK_STORAGE_GET_F_CREATE);
+@@ -56,7 +58,7 @@ int connect6(struct bpf_sock_addr *ctx)
+ 		ctx->user_ip6[1] = 0;
+ 		ctx->user_ip6[2] = 0;
+ 		ctx->user_ip6[3] = bpf_htonl(1);
+-		ctx->user_port = bpf_htons(60124);
++		ctx->user_port = bpf_htons(port);
+ 	}
+ 	return 1;
+ }
+@@ -68,7 +70,7 @@ int getsockname6(struct bpf_sock_addr *ctx)
+ 		return 1;
+ 
+ 	/* Expose local server as [fc00::1]:60000 to client. */
+-	if (ctx->user_port == bpf_htons(60124)) {
++	if (ctx->user_port == bpf_htons(port)) {
+ 		ctx->user_ip6[0] = bpf_htonl(0xfc000000);
+ 		ctx->user_ip6[1] = 0;
+ 		ctx->user_ip6[2] = 0;
+@@ -87,7 +89,7 @@ int getpeername6(struct bpf_sock_addr *ctx)
+ 		return 1;
+ 
+ 	/* Expose service [fc00::1]:60000 as peer instead of backend. */
+-	if (ctx->user_port == bpf_htons(60124)) {
++	if (ctx->user_port == bpf_htons(port)) {
+ 		orig = bpf_sk_storage_get(&service_mapping, ctx->sk, 0, 0);
+ 		if (orig) {
+ 			ctx->user_ip6[0] = orig->addr[0];
+-- 
+2.53.0
+
