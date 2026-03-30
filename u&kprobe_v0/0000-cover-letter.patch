@@ -1,10 +1,13 @@
-From 710e46344f1bc0469b482afb3a2431fb9714cc5b Mon Sep 17 00:00:00 2001
+From a40af52bd53bf941998da1f7d11f923520384231 Mon Sep 17 00:00:00 2001
 From: Varun R Mallya <varunrmallya@gmail.com>
-Date: Mon, 9 Feb 2026 23:01:28 +0530
-Subject: [RFC PATCH bpf-next 0/1] Upgrading uprobe and kprobe to their `multi` counterparts.
+Date: Mon, 30 Mar 2026 16:17:33 +0530
+Subject: [RFC PATCH bpf-next v2 0/3] Upgrading uprobe and kprobe to their `multi` counterparts.
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
 
-This RFC patch explores auto-upgrading standard uprobes to use the 
-multi-uprobe infrastructure when supported by the underlying kernel.
+This RFC patch explores auto-upgrading standard uprobes/kprobes to use the 
+multi-uprobe/multi-kprobe infrastructure when applicable.
 
 Background:
 The BPF token concept allows privileged operations inside non-privileged 
@@ -21,37 +24,69 @@ desired, this patch also introduces SEC("uprobe.single") and
 SEC("kprobe.single").
 
 Current Implementation:
-The decision to upgrade is made at BPF program load time in 
-`bpf_object_init_progs()`. If the kernel supports FEAT_UPROBE_MULTI_LINK,
+The decision to upgrade is made in `bpf_object_prepare_progs()`
+(According to the feedback received in [1].)
+If the kernel supports FEAT_UPROBE_MULTI_LINK,
 we intercept programs with section names matching "u[ret]probe" and change 
 their `expected_attach_type` to BPF_TRACE_UPROBE_MULTI.
 
-During attachment, `attach_uprobe` checks this expected type and 
-routes the attachment to `bpf_program__attach_uprobe_multi` accordingly.
+A similar thing is done with kprobes, but I had to add a new
+FEAT_KPROBE_MULTI_LINK to the kern_feature_id struct along with it's
+implementation similar to it's uprobe counterpart.
 
-I am currently hitting an issue with selftests, and I would appreciate 
-some guidance before proceeding to implement this for kprobes and fix it
-for uprobes.
+Just one selftest had to be changed for uprobe but quite a few had to be
+changed for kprobe. The decision to change them have been explained in
+the commit descriptions.
 
-Selftests that rely on auto-attachment pass. However, tests that bypass 
-auto-attach and manually call `bpf_program__attach_uprobe_opts()` are 
-failing. Because the program's `expected_attach_type` is modified to 
-multi-uprobe at load time inside `bpf_object_init_progs()`, directly 
-calling the legacy attach options subsequently dies due to the type 
-mismatch. 
+Some Observations:
+- Earlier, I noted that uprobe and uprobe_multi are equivalent. I have
+  found out that uprobe_multi does not support versioned symbols such as
+  those in `tools/testing/selftests/bpf/progs/test_uprobe.c` like
+  `SEC("uprobe/./liburandom_read.so:  \
+   urandlib_api_sameoffset@LIBURANDOM_READ_1.0.0")`.
+  I believe this is something I need to fix as well to be able to support
+  versioned symbols. Right now, these have been excluded from
+  upgradation.
 
-How should we handle legacy manual attachments for auto-upgraded programs? 
-Should `bpf_program__attach_uprobe_opts()` be taught to internally 
-redirect to the multi-uprobe path if the expected type was upgraded?
+My questions:
+- I want know if the conditions I have placed for FEAT_KPROBE_MULTI_LINK
+  to be true in `probe_kprobe_multi_link()` are correct. I feel like it's
+  incomplete and would need some more things to say definitively that
+  Kprobe-multi works on a particular kernel (especially with respect 
+  to the error value like that in it's uprobe counterpart.). 
+  I would really appreciate suggestions here.
 
-Thanks,
-Varun
+- I had to exclude sleepable kprobes from being upgraded due to tests
+  failing. I want to know if that was a good desicion.
 
-Varun R Mallya (1):
+- I had to change the `get_func_ip_test` selftest to `?kprobe.single` from
+  `?kprobe` due to offsets that were added later (after prepare_progs
+  ran). This means that anyone using `?kprobe` along with offsets will
+  have to change things which is not ideal. Is it alright if I exclude
+  this class of SEC_DEFs from getting upgraded ?
+
+P.S : Sorry for the incredibly late v2 on the reviews for that patch, I
+was unsure of the changes I had made and wanted to thoroughly verify
+things before sending them out.
+
+v1->v2 changes: All suggestions from Andrii's review on v1 were made as
+well as support for kprobe upgrade was added.
+
+[1]: https://lore.kernel.org/bpf/20260212152013.17351-1-varunrmallya@gmail.com/
+
+Varun R Mallya (3):
   libbpf: Auto-upgrade uprobes to multi-uprobes when supported
+  libbpf: Add FEAT_KPROBE_MULTI_LINK feature probe.
+  libbpf: Auto-upgrade kprobes to multi-kprobes when supported
 
- tools/lib/bpf/libbpf.c | 42 ++++++++++++++++++++++++++++++++++++------
- 1 file changed, 36 insertions(+), 6 deletions(-)
+ tools/lib/bpf/features.c                      |  37 ++++++
+ tools/lib/bpf/libbpf.c                        | 114 ++++++++++++++++--
+ tools/lib/bpf/libbpf_internal.h               |   2 +
+ .../selftests/bpf/progs/get_func_ip_test.c    |   2 +-
+ .../selftests/bpf/progs/missed_kprobe.c       |   4 +-
+ .../bpf/progs/test_attach_probe_manual.c      |   4 +-
+ .../selftests/bpf/progs/test_fill_link_info.c |   4 +-
+ 7 files changed, 151 insertions(+), 16 deletions(-)
 
 -- 
 2.52.0

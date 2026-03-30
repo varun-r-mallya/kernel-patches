@@ -1,8 +1,8 @@
 From 4d523a97e4192e06179d3b57e72b924271d7810d Mon Sep 17 00:00:00 2001
 From: Varun R Mallya <varunrmallya@gmail.com>
 Date: Tue, 27 Jan 2026 13:11:14 +0530
-Subject: [RFC PATCH bpf-next v2] libbpf: Auto-upgrade uprobes to multi-uprobes
- when supported
+Subject: [RFC PATCH bpf-next v2 1/3] libbpf: Auto-upgrade uprobes to
+ multi-uprobes when supported
 
 This patch modifies libbpf to automatically "upgrade" standard
 SEC("uprobe") and SEC("uretprobe") programs to use the multi-uprobe
@@ -138,5 +138,5 @@ index fac33a14f200..8e47a818462f 100644
  {
  	return 0;
 -- 
-2.53.0
+2.52.0
 
