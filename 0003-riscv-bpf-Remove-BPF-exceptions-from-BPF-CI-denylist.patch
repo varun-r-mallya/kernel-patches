@@ -1,0 +1,26 @@
+From 4327d9b7e6b217d5ab87975dd61c22eb43ae5952 Mon Sep 17 00:00:00 2001
+From: Varun R Mallya <varunrmallya@gmail.com>
+Date: Sun, 21 Jun 2026 19:12:05 +0530
+Subject: [PATCH bpf-next v2 3/3] riscv, bpf: Remove BPF exceptions from BPF CI
+ denylist
+
+This patch removes BPF exceptions from riscv64 denylist on
+BPF selftests since support for exceptions has been added now.
+
+Signed-off-by: Varun R Mallya <varunrmallya@gmail.com>
+Reviewed-by: Pu Lehui <pulehui@huawei.com>
+---
+ tools/testing/selftests/bpf/DENYLIST.riscv64 | 1 -
+ 1 file changed, 1 deletion(-)
+
+diff --git a/tools/testing/selftests/bpf/DENYLIST.riscv64 b/tools/testing/selftests/bpf/DENYLIST.riscv64
+index 4fc4dfdde293..9268351ce4c1 100644
+--- a/tools/testing/selftests/bpf/DENYLIST.riscv64
++++ b/tools/testing/selftests/bpf/DENYLIST.riscv64
+@@ -1,3 +1,2 @@
+ # riscv64 deny list for BPF CI and local vmtest
+-exceptions					# JIT does not support exceptions
+ tailcalls/tailcall_bpf2bpf*			# JIT does not support mixing bpf2bpf and tailcalls
+-- 
+2.54.0
+
